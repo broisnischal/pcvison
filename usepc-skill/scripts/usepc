@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Thin launcher, so the CLI behaves the same whether the skill was symlinked,
+# copied, or is being run straight out of a git checkout.
+set -euo pipefail
+target="${BASH_SOURCE[0]}"
+while [ -L "$target" ]; do target="$(readlink "$target")"; done
+here="$(cd -- "$(dirname -- "$target")" && pwd)"
+exec "${USEPC_PYTHON:-python3}" "$here/usepc_ctl.py" "$@"
