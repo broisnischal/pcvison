@@ -389,6 +389,141 @@ def _dress_monitor_window(pid: int, opacity: float) -> None:
         return
 
 
+# ------------------------------------------------------------- watching the screen
+
+
+def _fmt_dur(seconds: float | None) -> str:
+    if seconds is None:
+        return "--"
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+    return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+
+
+def cmd_watch(args) -> int:
+    import watch
+
+    action = args.action
+
+    if action == "_supervise":
+        return watch.supervise(json.loads(args.config))
+    if action == "_run":
+        return watch.record(json.loads(args.config))
+
+    if action == "start":
+        state = watch.start(fps=args.fps, seconds=args.seconds, detail=args.detail,
+                            monitor=args.monitor, region=args.region, cursor=args.cursor,
+                            max_mb=args.max_mb, restart=args.restart)
+        log_action(f"watch start {args.fps}fps {args.seconds:g}s {args.detail}")
+        if state.get("already_running"):
+            print("already watching — `usepc watch start --restart` to reconfigure")
+        else:
+            target = args.monitor or args.region or "the whole desktop"
+            print(f"watching {target} at {args.fps:g} fps, keeping the last "
+                  f"{_fmt_dur(args.seconds)} (cap {args.max_mb:g} MB)")
+            print("frames stay on this machine and age out on their own; "
+                  "`usepc watch stop --purge` deletes them now")
+        return _print_watch_status(watch, brief=True)
+
+    if action == "stop":
+        result = watch.stop(purge=args.purge)
+        log_action("watch stop" + (" --purge" if args.purge else ""))
+        print(f"recorder {'stopped' if result['stopped'] else 'was not running'}"
+              + (f", {result['frames_deleted']} frames deleted" if args.purge
+                 else f", {result['frames_left']} frames left in the ring"))
+        return 0
+
+    if action == "clear":
+        print(f"{watch.clear()} frames deleted")
+        return 0
+
+    healed = watch.ensure_running()
+    if healed:
+        print(f"# recorder had stopped ({healed['was']}) — restarted it", file=sys.stderr)
+
+    if action == "status":
+        if args.json:
+            print(json.dumps(watch.status(), indent=1, default=str))
+            return 0
+        return _print_watch_status(watch)
+
+    if action == "timeline":
+        segments = watch.segments(args.seconds, min_seconds=args.min_seconds)
+        if args.json:
+            print(json.dumps(segments, indent=1, default=str))
+            return 0
+        _print_watch_status(watch, brief=True)
+        print()
+        for seg in segments:
+            clock = time.strftime("%H:%M:%S", time.localtime(seg["start"]))
+            title = (seg.get("title") or "")[:58]
+            tail = "  idle" if seg["idle"] else ""
+            print(f" {clock}  {_fmt_dur(seg['seconds']):>7}  "
+                  f"{(seg.get('app') or '?')[:14]:<14} {title}{tail}")
+        watched = sum(s["seconds"] for s in segments)
+        idle = sum(s["seconds"] for s in segments if s["idle"])
+        print(f"\n{_fmt_dur(watched)} covered · {_fmt_dur(idle)} of it with the screen unchanged"
+              f" · {len(segments)} stretches")
+        return 0
+
+    if action == "view":
+        picks = watch.pick_frames(args.seconds, args.frames, changes_only=not args.all_frames)
+        sheet = watch.sheet(picks, columns=args.columns)
+        span = picks[-1]["ago"] - picks[0]["ago"]
+        print(f"last {_fmt_dur(args.seconds)} — {len(picks)} frames spanning {_fmt_dur(abs(span))}"
+              f", newest {picks[-1]['ago']:.0f}s old")
+        for pick in picks:
+            where = f"  {pick['app']}" if pick.get("app") else ""
+            print(f"  {pick['clock']}  -{pick['ago']:>5.0f}s{where}  {pick['path']}")
+        if sheet:
+            print(f"\ncontact sheet (all of the above in one image): {sheet}")
+        else:
+            print("\n# install imagemagick for a single contact-sheet image instead of N files")
+        return 0
+
+    if action == "latest":
+        pick = watch.pick_frames(seconds=max(30.0, args.seconds), count=1, changes_only=False)[-1]
+        doing = f" — {pick['app']}: {pick.get('title', '')}".rstrip(": ") if pick.get("app") else ""
+        print(f"{pick['clock']} ({pick['ago']:.0f}s ago){doing}")
+        print(pick["path"])
+        return 0
+
+    if action == "clip":
+        path = watch.clip(args.seconds, speed=args.speed)
+        print(f"{_fmt_dur(args.seconds)} of screen at {args.speed:g}× — {path}")
+        return 0
+
+    raise Fail(f"unknown watch action {action!r}")
+
+
+def _print_watch_status(watch, brief: bool = False) -> int:
+    state = watch.status()
+    if not state.get("running"):
+        print(f"screen watch: not running ({state.get('state')})"
+              " — `usepc watch start` to begin")
+        return 0
+    mark = "●" if state.get("healthy") else "◐"
+    target = state.get("monitor") or state.get("region") or "whole desktop"
+    print(f"screen watch {mark} {state.get('state')} · {target} · {state.get('fps'):g} fps · "
+          f"{state.get('detail')} · pid {state.get('pid')}"
+          + (f" · {state['restarts']} restarts" if state.get("restarts") else ""))
+    if state.get("failing_because"):
+        print(f"  last error: {state['failing_because']}")
+    print(f"  ring: {state.get('ticks', 0)} ticks over {_fmt_dur(state.get('span_seconds'))} · "
+          f"{state.get('frames_on_disk', 0)} distinct frames · "
+          f"{sysinfo.human_bytes(state.get('bytes'))} · "
+          f"newest {state.get('newest_age_seconds', '?')}s old")
+    if not brief:
+        doing = watch.brief().get("doing")
+        if doing:
+            print(f"  right now: {doing}")
+        print(f"  frames: {state.get('dir')}")
+    return 0
+
+
 # ------------------------------------------------------------------ state, cheap
 
 
@@ -442,6 +577,11 @@ def cmd_state(args) -> int:
               f"· {seat.get('windows', 0)} windows (own cursor)")
     else:
         print("agent seat not running (auto-starts on the first pointer action)")
+    screen = data.get("watch") or _watch_brief()
+    if screen.get("running"):
+        print(f"screen watch {'●' if screen.get('healthy') else '◐'} {screen.get('state')} · "
+              f"{screen.get('fps'):g} fps · last {_fmt_dur(screen.get('window'))} kept"
+              + (f" · doing: {screen['doing']}" if screen.get("doing") else ""))
     if args.full:
         for line in (desktop.get("windows") or [])[:12]:
             print(f"  {line}")
@@ -450,6 +590,14 @@ def cmd_state(args) -> int:
 
 def _num(value) -> str:
     return "--" if value is None else f"{value:.0f}"
+
+
+def _watch_brief() -> dict:
+    try:
+        import watch
+        return watch.brief()
+    except Exception as exc:
+        return {"running": False, "error": str(exc)[:80]}
 
 
 def _seat_brief() -> dict:
@@ -562,6 +710,11 @@ def cmd_doctor(args) -> int:
         overlay_ok = False
     print(f"translucent cursor: {'available' if overlay_ok else 'needs gtk4-layer-shell + pygobject'}")
     print(f"monitor:            {'running' if _monitor_alive() else 'stopped'}")
+    screen = _watch_brief()
+    can_sheet = bool(shutil.which("montage") or shutil.which("magick"))
+    print(f"screen watch:       {screen.get('state') if screen.get('running') else 'stopped'}"
+          f"  (contact sheets: {'imagemagick' if can_sheet else 'MISSING — install imagemagick'},"
+          f" clips: {'ffmpeg' if shutil.which('ffmpeg') else 'MISSING — install ffmpeg'})")
     print(f"state dir:          {STATE_DIR}")
     return 0
 
@@ -650,6 +803,35 @@ def build_parser() -> argparse.ArgumentParser:
     monitor_parser.add_argument("--no-tmux", action="store_true")
     monitor_parser.add_argument("--opacity", type=float, default=0.92)
     monitor_parser.set_defaults(func=cmd_monitor)
+
+    watch_parser = subs.add_parser(
+        "watch", help="keep watching the user's real screen, and read it back by time")
+    watch_parser.add_argument(
+        "action", nargs="?", default="status",
+        choices=("start", "stop", "status", "timeline", "view", "latest", "clip", "clear",
+                 "_supervise", "_run"))
+    watch_parser.add_argument("--fps", type=float, default=1.0, help="captures per second (≤4)")
+    watch_parser.add_argument("--seconds", type=float, default=300.0,
+                              help="how much history to keep, and how far back to read")
+    watch_parser.add_argument("--detail", choices=("low", "normal", "high", "full"),
+                              default="normal")
+    watch_parser.add_argument("--monitor", default=None, help="record one output, e.g. HDMI-A-1")
+    watch_parser.add_argument("--region", default=None, help="record a region, 'X,Y WxH'")
+    watch_parser.add_argument("--cursor", action="store_true", help="include the user's pointer")
+    watch_parser.add_argument("--max-mb", type=float, default=256.0,
+                              help="hard ceiling on what the ring may use")
+    watch_parser.add_argument("--restart", action="store_true", help="reconfigure a running watch")
+    watch_parser.add_argument("--purge", action="store_true", help="delete the frames on stop")
+    watch_parser.add_argument("--frames", type=int, default=6, help="tiles in `view`")
+    watch_parser.add_argument("--columns", type=int, default=3)
+    watch_parser.add_argument("--all-frames", action="store_true",
+                              help="do not skip stretches where nothing changed")
+    watch_parser.add_argument("--min-seconds", type=float, default=0.0,
+                              help="hide timeline stretches shorter than this")
+    watch_parser.add_argument("--speed", type=float, default=10.0, help="clip time compression")
+    watch_parser.add_argument("--config", default="{}", help=argparse.SUPPRESS)
+    watch_parser.add_argument("--json", action="store_true")
+    watch_parser.set_defaults(func=cmd_watch)
 
     state = subs.add_parser("state", help="one cheap textual reading of the machine")
     state.add_argument("--json", action="store_true")

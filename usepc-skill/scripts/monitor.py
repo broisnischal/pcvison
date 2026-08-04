@@ -125,6 +125,14 @@ def _seat_state() -> dict:
         return {"running": False, "error": str(exc)[:60]}
 
 
+def _watch_state() -> dict:
+    try:
+        import watch
+        return watch.brief()
+    except Exception as exc:
+        return {"running": False, "error": str(exc)[:60]}
+
+
 def _recent_actions(limit: int = 5) -> list[str]:
     try:
         lines = ACTION_LOG.read_text(errors="replace").splitlines()
@@ -248,6 +256,15 @@ class Dashboard:
             out.append(f"  {FG['grey']}○ not running — starts by itself on the agent's "
                        f"first action{RESET}")
 
+        screen = data.get("watch") or {}
+        if screen.get("running"):
+            colour = FG["green"] if screen.get("healthy") else FG["yellow"]
+            out.append(f"  {colour}◉{RESET} screen watch {DIM}{screen.get('state')} · "
+                       f"{screen.get('fps')} fps · {screen.get('frames')} frames · "
+                       f"newest {screen.get('newest_age')}s{RESET}")
+            if screen.get("doing"):
+                out.append(f"  {DIM}you are on{RESET} {str(screen['doing'])[:width - 16]}")
+
         actions = _recent_actions(4)
         if actions:
             out.append("")
@@ -297,6 +314,7 @@ class Dashboard:
                 if not self.paused:
                     data = sysinfo.snapshot(self.sampler, full=True, settle=0)
                     data["seat"] = _seat_state()
+                    data["watch"] = _watch_state()
                     write_state(data)
                     size = shutil.get_terminal_size((100, 30))
                     sys.stdout.write(HOME + CLEAR + self.render(data, size.columns, size.lines))

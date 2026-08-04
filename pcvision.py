@@ -68,6 +68,23 @@ def bootstrap_env() -> None:
             os.environ["HYPRLAND_INSTANCE_SIGNATURE"] = os.path.basename(insts[0])
 
 
+def rebind_env() -> str | None:
+    """Same idea, but for a session that moved under a long-running process: a
+    compositor restart hands out a fresh socket, and the old one never recovers.
+    Only worth calling once captures have started failing."""
+    rt = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    socks = sorted((s for s in glob.glob(f"{rt}/wayland-*") if not s.endswith(".lock")),
+                   key=os.path.getmtime, reverse=True)
+    insts = sorted((d for d in glob.glob(f"{rt}/hypr/*") if os.path.isdir(d)),
+                   key=os.path.getmtime, reverse=True)
+    if insts:
+        os.environ["HYPRLAND_INSTANCE_SIGNATURE"] = os.path.basename(insts[0])
+    if socks:
+        os.environ["WAYLAND_DISPLAY"] = os.path.basename(socks[0])
+        return os.path.basename(socks[0])
+    return None
+
+
 # ----------------------------------------------------------------------- capture
 
 
@@ -352,6 +369,7 @@ def live_start(
     detail: str = "low",
     include_cursor: bool = True,
     restart: bool = False,
+    keep_buffer: bool = False,
 ) -> dict:
     """Spawn a detached recorder that keeps the last `window_seconds` of screen."""
     m = _meta()
@@ -362,8 +380,9 @@ def live_start(
 
     _, _, label = resolve_target(monitor, window, region)  # validate before detaching
     LIVE.mkdir(parents=True, exist_ok=True)
-    for f in _buffered():
-        f.unlink(missing_ok=True)
+    if not keep_buffer:  # a revive keeps the history it already has
+        for f in _buffered():
+            f.unlink(missing_ok=True)
 
     fps = max(0.1, min(float(fps), 4.0))
     argv = [
@@ -391,6 +410,9 @@ def live_start(
                 "detail": detail,
                 "window_seconds": window_seconds,
                 "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+                # kept so a recorder that died can be brought back exactly as asked for
+                "args": {"monitor": monitor, "window": window, "region": region,
+                         "include_cursor": include_cursor},
             }
         )
     )
@@ -431,9 +453,17 @@ def live_run(fps: float, window_seconds: float, geo, out, cursor: bool, detail: 
             fails = 0
         except RuntimeError as e:  # screen locked, monitor unplugged, compositor restart
             fails += 1
-            print(f"[{time.strftime('%H:%M:%S')}] capture failed ({fails}): {e}", file=sys.stderr, flush=True)
-            if fails >= 60:
-                return 1
+            note = ""
+            if fails in (3, 10) or fails % 30 == 0:
+                # A restarted compositor is a new socket, not a dead machine.
+                note = f" — rebound to {rebind_env()}"
+            print(f"[{time.strftime('%H:%M:%S')}] capture failed ({fails}): {e}{note}",
+                  file=sys.stderr, flush=True)
+            # Every one of these ends when the user comes back, so wait it out
+            # instead of exiting and losing the history that is already buffered.
+            time.sleep(min(30.0, interval * (2 ** min(fails, 5))))
+            nxt = time.monotonic()
+            continue
         cutoff = time.time() - keep
         for p in _buffered():
             if _frame_ts(p) < cutoff:
@@ -450,6 +480,20 @@ def _delta(a: bytes, b: bytes) -> float:
     return sum(abs(x - y) for x, y in zip(a, b)) / len(a) / 255.0
 
 
+def live_revive() -> str | None:
+    """Bring a recorder that died back on the same target. Only ever revives a
+    watch the user already asked for — it never starts one by itself."""
+    m = _meta()
+    if not m or _alive(m["pid"]):
+        return None
+    args = m.get("args") or {}
+    live_start(m.get("fps", 1.0), m.get("window_seconds", 120.0),
+               args.get("monitor"), args.get("window"), args.get("region"),
+               m.get("detail", "low"), args.get("include_cursor", True),
+               restart=True, keep_buffer=True)
+    return f"recorder had died; restarted it on {m.get('target')}"
+
+
 def live_window(
     seconds: float = 30.0, count: int = 6, changes_only: bool = True, threshold: float = 0.012
 ) -> tuple[list[tuple[float, bytes]], int, int]:
@@ -457,6 +501,7 @@ def live_window(
 
     Returns (frames as (age_seconds, jpeg) newest-last, total_in_window, static_frames_dropped).
     """
+    live_revive()
     now = time.time()
     picked = [(now - _frame_ts(p), p.read_bytes()) for p in _buffered() if now - _frame_ts(p) <= seconds]
     total = len(picked)

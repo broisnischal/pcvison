@@ -85,6 +85,17 @@ pcvision live status
 pcvision live stop
 ```
 
+The recorder is built to outlast the session it started in. A locked screen, an
+unplugged output or a compositor restart are all just "grim failed", and all of
+them end when the user comes back — so it backs off, rebinds to the new Wayland
+socket, and keeps the history it already has instead of exiting. If it is killed
+outright, the next `live_view` / `live_latest` brings it back on the same target,
+buffer intact. It never *starts* a watch nobody asked for.
+
+For a longer-lived, text-first version of the same idea — a timeline of which
+window had focus and for how long, so a five-minute recap costs a few hundred
+tokens instead of a contact sheet — see `usepc watch` in `usepc-skill/`.
+
 ## CLI
 
 ```bash
