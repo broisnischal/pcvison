@@ -1,0 +1,7 @@
+{
+  "name": "pc",
+  "version": "2.0.0",
+  "description": "One static Go binary that sees and drives a Hyprland/Wayland desktop (screenshots in tens of milliseconds, clicks with a cloned on-screen agent cursor, layout-independent typing) and reports what the machine is doing: live CPU per process, failed and flapping services, crashes, OOM kills, logs, ports.",
+  "author": { "name": "nees" },
+  "keywords": ["desktop", "computer-use", "wayland", "hyprland", "monitoring", "screenshots", "mouse", "keyboard"]
+}

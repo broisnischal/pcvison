@@ -1,2 +1,0 @@
-#!/usr/bin/env bash
-exec /home/nees/usepc/.venv/bin/python /home/nees/usepc/pcvision.py "$@"

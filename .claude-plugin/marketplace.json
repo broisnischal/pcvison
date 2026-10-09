@@ -1,0 +1,12 @@
+{
+  "name": "pc",
+  "owner": { "name": "nees" },
+  "description": "pc, from this checkout: computer use and machine monitoring for Claude Code on Hyprland.",
+  "plugins": [
+    {
+      "name": "pc",
+      "source": "./plugin",
+      "description": "See and drive this Linux desktop with a cursor of the agent's own, and know what the machine is doing: processes, services, crashes, logs, ports."
+    }
+  ]
+}

@@ -1,6 +1,6 @@
+plugin/bin/
 .venv/
 __pycache__/
-*.pyc
 .claude/phobos-activity.log
 .claude/phobos-benchmark.jsonl
 .claude/phobos-state.md
